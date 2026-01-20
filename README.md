@@ -333,12 +333,166 @@ representative_stores = select_representative_stores(store_metrics)
 此选择确保了后续单品分析结论既能应对最大挑战，又能确立效率标准，从而形成从宏观到微观的完整决策闭环。
 
 
+## 单品微观诊断（聚焦CA区域，特定门店与单品）
+### 单品筛选与数据准备
+本步骤旨在将第二阶段的网络分析结论具体化，从选定的两家代表性门店（CA_1与CA_3）中，锁定少数几个核心单品作为微观诊断的最终对象。我们依据帕累托法则（80/20法则），分别在每家门店内部，按照商品的历史总销售额进行排序，筛选出排名前二的单品。这种方法确保了我们所分析的对象是驱动该门店业绩的核心商品，其库存策略的优化能产生最大的业务影响。最终，我们从两家门店共筛选出4个代表性单品，并生成了包含其ID、销售额、日均销量及排名信息的清单。此步骤的产出为后续的深度分析提供了明确的目标，实现了分析焦点从“门店”到“具体商品”的精准落地。
+```python
+# 步骤1：单品筛选与数据准备
+# 从CA_1和CA_3两家门店中筛选销售额TOP2单品
+# ============================================================================
+print("\n" + "=" * 60)
+print("步骤1：单品筛选与数据准备")
+print("=" * 60)
+
+# 定义目标门店
+target_stores = ['CA_1', 'CA_3']
+
+# 筛选目标门店数据
+target_stores_data = data_long[data_long['store_id'].isin(target_stores)].copy()
+print(f"目标门店数据行数: {len(target_stores_data)}")
+
+# 计算每个门店每个单品的销售表现
+item_performance = target_stores_data.groupby(['store_id', 'item_id']).agg({
+    'sales': ['sum', 'mean', 'std', 'count'],
+    'revenue': 'sum'
+}).reset_index()
+
+# 展平多级列名
+item_performance.columns = [
+    'store_id', 'item_id',
+    'total_quantity', 'avg_daily_quantity', 'std_daily_quantity', 'sales_days',
+    'total_revenue'
+]
+
+# 计算变异系数
+item_performance['cv_quantity'] = item_performance['std_daily_quantity'] / item_performance['avg_daily_quantity']
+item_performance['cv_quantity'] = item_performance['cv_quantity'].replace([np.inf, -np.inf], 0).fillna(0)
+
+# 对每个门店按总销售额排序，选取TOP2单品
+top_items_by_store = []
+
+for store in target_stores:
+    store_items = item_performance[item_performance['store_id'] == store].copy()
+    store_items = store_items.sort_values('total_revenue', ascending=False)
+
+    # 取前2名
+    store_top2 = store_items.head(2).copy()
+
+    # 添加排名信息
+    store_top2['store_rank'] = range(1, len(store_top2) + 1)
+    store_top2['selection_reason'] = f'在{store}门店销售额排名第' + store_top2['store_rank'].astype(str)
+
+    top_items_by_store.append(store_top2)
+
+# 合并结果
+target_items_df = pd.concat(top_items_by_store, ignore_index=True)
+
+# 保存结果
+target_items_file = os.path.join(output_dir, 'target_items.csv')
+target_items_df.to_csv(target_items_file, index=False, encoding='utf-8-sig')
+print(f"单品筛选结果已保存至: {target_items_file}")
+print(f"共筛选出 {len(target_items_df)} 个代表性单品")
+
+# 显示筛选结果
+print("\n筛选的单品列表:")
+for idx, row in target_items_df.iterrows():
+    print(f"{row['store_id']} - {row['item_id']}: "
+          f"总销售额${row['total_revenue']:.2f}, "
+          f"日均销量{row['avg_daily_quantity']:.2f}, "
+          f"排名{row['store_rank']}")
+```
+### 单品需求深度分析
+在确定目标单品后，本步骤对其进行严格的需求规律量化，为构建库存模型夯实数据基础。我们计算了每个单品历史日需求的核心统计参数，包括均值(μ)、标准差(σ)和变异系数(CV)，这些是计算安全库存与再订货点的关键输入。同时，我们生成了其需求分布的直方图数据，并拟合了对应的正态分布曲线，以直观评估其需求波动形态是否符合经典库存模型的假设。此外，分析还涵盖了分位数、零销量天数比例等指标，全面刻画需求的集中趋势、离散程度与分布特征。这一步将单品抽象的历史销售记录转化为一系列可运算的、具有明确管理意义的参数，为下一步的库存策略模拟与优化提供了可靠的“事实依据”。
+```python
+# 步骤2：单品需求深度分析
+# 对每个选定的单品进行详细的需求分析
+# ============================================================================
+print("\n" + "=" * 60)
+print("步骤2：单品需求深度分析")
+print("=" * 60)
+
+# 获取选定单品的详细信息
+selected_items_data = []
+
+for idx, row in target_items_df.iterrows():
+    store_id = row['store_id']
+    item_id = row['item_id']
+
+    # 筛选该单品在该门店的所有数据
+    item_data = data_long[
+        (data_long['store_id'] == store_id) &
+        (data_long['item_id'] == item_id)
+        ].copy()
+
+    # 计算基本统计量
+    daily_sales = item_data['sales']
+    mu = daily_sales.mean()
+    sigma = daily_sales.std()
+    cv = sigma / mu if mu > 0 else 0
+
+    # 计算分位数
+    q25 = daily_sales.quantile(0.25)
+    median = daily_sales.median()
+    q75 = daily_sales.quantile(0.75)
+
+    # 计算零销售天数比例
+    zero_sales_days = (daily_sales == 0).sum()
+    zero_sales_ratio = zero_sales_days / len(daily_sales)
 
 
+    # 计算最大连续销售/非销售天数
+    def max_consecutive_days(series, value=0):
+        max_count = 0
+        current_count = 0
+        for val in series:
+            if val == value:
+                current_count += 1
+                max_count = max(max_count, current_count)
+            else:
+                current_count = 0
+        return max_count
 
 
+    max_consecutive_zero = max_consecutive_days(daily_sales, 0)
+    max_consecutive_sales = max_consecutive_days(daily_sales > 0, True)
 
+    # 收集单品统计信息
+    item_stats = {
+        'store_id': store_id,
+        'item_id': item_id,
+        'mu': mu,
+        'sigma': sigma,
+        'cv': cv,
+        'q25': q25,
+        'median': median,
+        'q75': q75,
+        'min': daily_sales.min(),
+        'max': daily_sales.max(),
+        'total_days': len(daily_sales),
+        'zero_sales_days': zero_sales_days,
+        'zero_sales_ratio': zero_sales_ratio,
+        'max_consecutive_zero': max_consecutive_zero,
+        'max_consecutive_sales': max_consecutive_sales,
+        'store_rank': row['store_rank']
+    }
 
+    selected_items_data.append(item_stats)
+
+# 创建单品需求统计表
+item_demand_stats = pd.DataFrame(selected_items_data)
+
+# 保存单品需求统计
+stats_file = os.path.join(output_dir, 'item_demand_stats.csv')
+item_demand_stats.to_csv(stats_file, index=False, encoding='utf-8-sig')
+print(f"单品需求统计数据已保存至: {stats_file}")
+
+# 显示统计摘要
+print("\n单品需求统计摘要:")
+print(item_demand_stats[['store_id', 'item_id', 'mu', 'sigma', 'cv', 'zero_sales_ratio']].round(4))
+
+# ============================================================================
+
+```
 
 
 
