@@ -119,3 +119,187 @@ print(f"中央仓变异系数(CV): {central_cv:.3f}")
 基于分析，网络聚合效应得到了确凿的量化证实。分析结果显示，加州各门店FOODS品类的平均需求变异系数(CV)为0.241，而将全州需求汇总至中央仓后，其变异系数降低至0.212。这意味着集中库存使得需求波动相对降低了12.1%，清晰地验证了“风险共担”原理：聚合分散且不完全相关的需求，可以有效平滑整体波动，从而为中央仓实施更精准、更高效的库存策略提供了数据基础。
 
 更进一步，将此结果与第一阶段的全国性分析对比，能揭示出供应链网络层级对波动平滑的关键影响。第一阶段计算出的全国月度需求CV为0.167，显著低于加州的中央仓CV(0.212)。这一差异说明，聚合的层级越高（从州级到全国），所能吸纳和抵消的局部随机波动就越多，整体需求将变得更加稳定和可预测。这一对比强有力地证明，构建多层级、集中化的供应链网络，是应对需求不确定性、提升运营稳健性的核心战略。
+### 门店需求画像分析
+门店需求画像分析旨在将宏观的市场洞察转化为具体、可执行的网络管理策略，其核心目标是深入理解FOODS品类在加州供应链网络中的分布特征与运营挑战。我们通过对每个门店进行多维度的量化评估，构建从规模、稳定性到战略重要性的完整画像。具体做法是：首先聚合门店日级销售数据，计算关键指标如总销售额、日均销量及衡量波动性的变异系数；随后运用帕累托法则进行ABC分类，锁定贡献70%销售额的A类核心门店；同时通过四象限分析法，以销量和波动性为维度将门店划分为“高销量低波动”等类型。这一分析不仅为验证网络聚合效应提供了微观基础，更为后续单品级库存优化筛选出具有代表性的目标门店，实现从“知道哪里的市场重要”到“明白具体该如何管理”的决策跨越。具体实现代码如下：
+```python
+# 2. 计算销售额（销量 × 价格）
+data_long['revenue'] = data_long['sales'] * data_long['sell_price']
+
+# 3. 门店日级聚合（计算每个门店每天的销量和销售额）
+store_daily = data_long.groupby(['store_id', 'date']).agg({
+    'sales': 'sum',  # 总销量
+    'revenue': 'sum'  # 总销售额
+}).reset_index()
+
+
+# 4. 计算门店核心指标
+def calculate_store_metrics(store_daily_df):
+    """计算每个门店的核心指标"""
+
+    # 按门店分组计算
+    store_metrics = store_daily_df.groupby('store_id').agg({
+        'sales': ['count', 'sum', 'mean', 'std'],
+        'revenue': ['sum', 'mean', 'std']
+    }).reset_index()
+
+    # 展平多级列名
+    store_metrics.columns = [
+        'store_id',
+        'days_count',  # 观测天数
+        'total_quantity',  # 总销量
+        'avg_daily_quantity',  # 日均销量
+        'std_daily_quantity',  # 日销量标准差
+        'total_revenue',  # 总销售额
+        'avg_daily_revenue',  # 日均销售额
+        'std_daily_revenue'  # 日销售额标准差
+    ]
+
+    # 计算变异系数（CV）
+    store_metrics['cv_quantity'] = np.where(
+        store_metrics['avg_daily_quantity'] > 0,
+        store_metrics['std_daily_quantity'] / store_metrics['avg_daily_quantity'],
+        0
+    )
+
+    store_metrics['cv_revenue'] = np.where(
+        store_metrics['avg_daily_revenue'] > 0,
+        store_metrics['std_daily_revenue'] / store_metrics['avg_daily_revenue'],
+        0
+    )
+
+    return store_metrics
+
+
+store_metrics = calculate_store_metrics(store_daily)
+
+
+# 5. ABC分类（基于总销售额）
+def abc_classification(df, revenue_col='total_revenue', a_threshold=0.7):
+    """基于销售额进行ABC分类"""
+    df_sorted = df.sort_values(revenue_col, ascending=False).copy()
+    df_sorted['cumulative_revenue'] = df_sorted[revenue_col].cumsum()
+    total_revenue = df_sorted[revenue_col].sum()
+    df_sorted['cumulative_pct'] = df_sorted['cumulative_revenue'] / total_revenue
+
+    # A类：累计占比 ≤ 70%
+    # B类：累计占比 70% - 90%
+    # C类：累计占比 > 90%
+    df_sorted['abc_class'] = 'C'
+    df_sorted.loc[df_sorted['cumulative_pct'] <= 0.9, 'abc_class'] = 'B'
+    df_sorted.loc[df_sorted['cumulative_pct'] <= 0.7, 'abc_class'] = 'A'
+
+    return df_sorted
+
+
+store_metrics = abc_classification(store_metrics)
+
+
+# 6. 四象限分析（基于日均销量和销量变异系数）
+def quadrant_analysis(df, x_col='avg_daily_quantity', y_col='cv_quantity'):
+    """基于销量和变异系数进行四象限分析"""
+    df = df.copy()
+
+    # 计算中位数作为分割点
+    x_median = df[x_col].median()
+    y_median = df[y_col].median()
+
+    # 四象限分类
+    conditions = [
+        (df[x_col] > x_median) & (df[y_col] > y_median),  # 第一象限：高销量、高波动
+        (df[x_col] > x_median) & (df[y_col] <= y_median),  # 第二象限：高销量、低波动
+        (df[x_col] <= x_median) & (df[y_col] > y_median),  # 第三象限：低销量、高波动
+        (df[x_col] <= x_median) & (df[y_col] <= y_median)  # 第四象限：低销量、低波动
+    ]
+
+    choices = ['高销量高波动', '高销量低波动', '低销量高波动', '低销量低波动']
+    df['quadrant'] = np.select(conditions, choices, default='未知')
+
+    # 添加中位数参考值
+    df[f'{x_col}_median'] = x_median
+    df[f'{y_col}_median'] = y_median
+
+    return df
+
+
+store_metrics = quadrant_analysis(store_metrics)
+
+
+# 7. 计算门店间相关性矩阵（用于分析牛鞭效应风险）
+def calculate_correlation_matrix(store_daily_df):
+    """计算门店日销售额的相关系数矩阵"""
+    # 创建门店日销售额的透视表
+    revenue_pivot = store_daily_df.pivot_table(
+        index='date',
+        columns='store_id',
+        values='revenue',
+        aggfunc='sum'
+    ).fillna(0)
+
+    # 计算相关系数矩阵
+    correlation_matrix = revenue_pivot.corr()
+
+    # 提取每对门店的相关性
+    correlation_list = []
+    store_ids = correlation_matrix.columns.tolist()
+
+    for i in range(len(store_ids)):
+        for j in range(i + 1, len(store_ids)):
+            store1 = store_ids[i]
+            store2 = store_ids[j]
+            corr_value = correlation_matrix.loc[store1, store2]
+
+            correlation_list.append({
+                'store_1': store1,
+                'store_2': store2,
+                'correlation': corr_value
+            })
+
+    correlation_df = pd.DataFrame(correlation_list)
+
+    # 标记高度相关（>0.7）和中度相关（>0.3）的门店对
+    correlation_df['correlation_level'] = '低相关(<0.3)'
+    correlation_df.loc[correlation_df['correlation'] > 0.3, 'correlation_level'] = '中度相关(0.3-0.7)'
+    correlation_df.loc[correlation_df['correlation'] > 0.7, 'correlation_level'] = '高度相关(>0.7)'
+
+    return correlation_matrix, correlation_df
+
+
+correlation_matrix, correlation_pairs = calculate_correlation_matrix(store_daily)
+
+
+# 8. 代表性门店筛选
+def select_representative_stores(store_metrics_df):
+    """基于多个维度筛选代表性门店"""
+
+    # 筛选A类门店
+    a_stores = store_metrics_df[store_metrics_df['abc_class'] == 'A']
+
+    # 不同类型代表门店
+    representatives = {
+        '高销量代表': a_stores.loc[a_stores['total_revenue'].idxmax(), 'store_id'],
+        '高波动代表': a_stores.loc[a_stores['cv_quantity'].idxmax(), 'store_id'],
+        '低波动代表': a_stores.loc[a_stores['cv_quantity'].idxmin(), 'store_id'],
+        '四象限高销量低波动': store_metrics_df[
+                                  store_metrics_df['quadrant'] == '高销量低波动'
+                                  ].loc[:, 'store_id'].iloc[0] if not store_metrics_df[
+            store_metrics_df['quadrant'] == '高销量低波动'
+            ].empty else None
+    }
+
+    # 创建代表性门店列表
+    rep_df = pd.DataFrame({
+        'store_id': list(representatives.values()),
+        'representative_type': list(representatives.keys()),
+        'selection_reason': [
+            'A类门店中总销售额最高',
+            'A类门店中需求波动最大（变异系数最高）',
+            'A类门店中需求波动最小（变异系数最低）',
+            '四象限分析中的高销量低波动门店'
+        ]
+    })
+
+    return rep_df
+
+
+representative_stores = select_representative_stores(store_metrics)
+```
