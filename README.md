@@ -690,9 +690,345 @@ print(f"正态分布参考线数据已保存至: {norm_dist_file}")
 基于深度分析，我们识别出导致单品需求呈现高波动性（CV>0.77）与分布拟合不佳的核心症结：少数由促销或节假日驱动的“极端日期”所产生的爆发性销量。这些日期不仅极大地拉高了需求的标准差，其与大量零销日共存的模式，更直接导致直方图出现“零值堆积”与“右偏长尾”的扭曲形态。这并非经典库存模型的根本性失效，而是揭示了其静态参数体系在应对结构性需求突变时存在局限。具体而言，模型在管理长期、平稳的“基线需求”时依然有效，但无法自适应地处理偶发、高影响的“脉冲需求”。
 
 因此，后续的库存策略不应抛弃经典框架，而需对其进行关键增强，构建一个 “基线+事件”的双轨自适应系统。该系统以经典模型计算出的安全库存与再订货点作为管理日常稳态运营的基准；同时，必须深度集成日期分析，通过识别历史与计划中的营销事件，主动在“极端日期”来临前触发库存预案，动态叠加或切换至更高的“事件安全库存”水平。这一策略的本质，是将供应链响应从被动应对波动，升级为主动管理已知的业务节奏。
+### 参数设置
+在参数与假设设定阶段，我们严格遵循“基于业务逻辑、适配数据特性、支持管理决策”的原则。所有关键参数均非随意指定，其背后是行业经验与数据特征的结合：
 
+补货提前期 (L=2天)：采用零售杂货行业对高频补货的常规假设。这是一个基准值，管理者可根据实际物流效率进行替换，模型将自动重新计算所有库存参数。
+
+服务水平范围与Z值 (80% 至 99%)：选择这一范围旨在覆盖从“成本优先”到“服务优先”的完整管理策略光谱。特别地，我们纳入了95%以上区间的分析，因为对于CV值极高的单品，服务水平每提升1个百分点，所要求的安全库存增量将急剧扩大，这能为管理层揭示边际效益的拐点。
+
+成本参数的核心逻辑：
+
+持有成本率 (年化20%)：此为零售库存的典型综合成本，包含资金占用（约8-10%）、仓储运营、保险及商品损耗风险。
+
+缺货成本系数 (3倍毛利)：这是为应对高波动、脉冲式需求特性的关键假设。对于此类商品，缺货不仅损失单笔交易利润，更可能因促销机会错失或顾客体验下降而带来数倍于毛利的长期隐性损失。该系数旨在量化此放大效应。
+
+动态成本计算：模型并非使用统一的成本绝对值，而是基于每个单品的实际历史平均售价来动态计算其单位持有成本与缺货成本。这确保了成本分析能反映商品间的价值差异。
+
+模拟的再订货点范围：成本模拟不仅测试了由报童模型生成的几个理论点，更围绕日均需求 (μ) 设置了从50%到300%的宽泛测试区间。这一设计的目的是确保在U形成本曲线上，能完整捕捉到最低成本点，避免因测试点不足而错过最优策略。
+
+总而言之，所有假设均服务于一个目标：在承认数据“高波动、间歇性”本质的前提下，构建一个既反映普遍商业规则、又可让管理者根据自身风险偏好和实际成本进行校准的决策分析框架。
 ### 库存策略模拟与优化
+本步骤旨在将抽象的需求统计数据（均值μ、标准差σ）转化为具体、可执行的库存控制参数。我们应用经典的报童模型，其核心目标是为管理者提供不同风险偏好下的明确选项。通过设定一个固定的补货提前期（L=2天），并遍历一系列服务水平（如从80%到99%），我们计算出对应的安全库存（SS = Z * σ * √L）与再订货点（ROP = μ * L + SS）。模拟的关键产出是清晰展示服务水平与库存成本之间的非线性关系：安全库存会随服务水平要求的微小提升而加速增加。这直观揭示了“边际成本递增”规律，帮助管理层理解，追求极致服务水平（如99.9%）将带来不成比例的库存负担，从而为设定现实、经济的目标提供量化依据。
+```python
+# 步骤1：库存策略模拟与优化（应用报童模型）
+# ============================================================================
+print("\n" + "=" * 60)
+print("步骤1：库存策略模拟与优化")
+print("=" * 60)
+
+
+def calculate_inventory_policies(row):
+    """为单个单品计算不同服务水平下的库存参数"""
+    mu = row['mu']  # 日均需求
+    sigma = row['sigma']  # 日需求标准差
+
+    policies = []
+    for sl in SERVICE_LEVELS:
+        z = Z_VALUES[sl]
+
+        # 计算安全库存和再订货点
+        safety_stock = z * sigma * np.sqrt(LEAD_TIME)
+        reorder_point = mu * LEAD_TIME + safety_stock
+
+        policies.append({
+            'store_id': row['store_id'],
+            'item_id': row['item_id'],
+            'service_level': sl,
+            'z_value': z,
+            'mu': mu,
+            'sigma': sigma,
+            'safety_stock': safety_stock,
+            'reorder_point': reorder_point,
+            'lead_time_demand': mu * LEAD_TIME,
+            'cv': row['cv']
+        })
+
+    return pd.DataFrame(policies)
+
+
+# 为每个单品计算库存策略
+all_policies = []
+for idx, row in item_demand_stats.iterrows():
+    policies_df = calculate_inventory_policies(row)
+    all_policies.append(policies_df)
+
+inventory_policies = pd.concat(all_policies, ignore_index=True)
+
+# 保存策略结果
+policies_file = r'D:\供应链\inventory_policies.csv'
+inventory_policies.to_csv(policies_file, index=False, encoding='utf-8-sig')
+print(f"库存策略模拟结果已保存至: {policies_file}")
+
+# 显示关键结果
+print("\n关键库存参数（CA_1 - FOODS_3_120为例）:")
+sample_policy = inventory_policies[
+    (inventory_policies['store_id'] == 'CA_1') &
+    (inventory_policies['item_id'] == 'FOODS_3_120')
+    ].head()
+print(sample_policy[['service_level', 'safety_stock', 'reorder_point']].round(2))
+```
 ### 成本权衡分析
+库存策略模拟提供了“可能性”，而成本权衡分析则用于确定“经济最优性”。此步骤的核心是将管理目标（服务水平）转化为真实的财务语言，在“持有过多库存的成本”与“缺货造成的损失”之间找到最佳平衡点。我们基于业务假设（如单位持有成本为商品年价值的20%，单位缺货损失为毛利的3倍），对每个待选的再订货点（ROP）进行历史数据模拟，计算其对应的总成本。分析将生成一条典型的U形成本曲线，其最低点所对应的再订货点，即为理论上的成本最优解。这使我们能够摒弃主观臆断，给出一个数据驱动的建议：在可接受的成本范围内，应设定的具体再订货点是多少。最终，决策者获得的不是单一的最优解，而是成本与服务水平之间完整的权衡视野，以支持更明智的业务取舍。
+```python
+# 步骤2：成本权衡分析
+# ============================================================================
+print("\n" + "=" * 60)
+print("步骤2：成本权衡分析")
+print("=" * 60)
+
+
+def simulate_inventory_costs(store_id, item_id, reorder_point, demand_data,
+                             holding_cost_per_unit_per_day, stockout_cost_per_unit):
+    """模拟给定再订货点下的库存成本"""
+
+    # 获取该单品的历史日需求数据
+    item_history = demand_data[
+        (demand_data['store_id'] == store_id) &
+        (demand_data['item_id'] == item_id)
+        ].sort_values('date')
+
+    if len(item_history) == 0:
+        return None
+
+    daily_demand = item_history['sales'].values
+    prices = item_history['sell_price'].values
+
+    # 模拟参数
+    days = len(daily_demand)
+    inventory_level = reorder_point * 2  # 初始库存设为再订货点的2倍
+    in_transit = 0  # 在途库存
+    arrival_day = -1  # 到货日
+
+    total_holding_cost = 0
+    total_stockout_cost = 0
+    total_ordering_cost = 0
+
+    # 模拟每天的库存变化
+    for day in range(days):
+        # 检查是否有订单到货
+        if day == arrival_day:
+            inventory_level += in_transit
+            in_transit = 0
+            arrival_day = -1
+
+        # 满足当日需求
+        demand = daily_demand[day]
+        if demand <= inventory_level:
+            inventory_level -= demand
+            stockout = 0
+        else:
+            stockout = demand - inventory_level
+            inventory_level = 0
+
+        # 计算当日成本
+        avg_price = np.mean(prices[max(0, day - 30):min(days, day + 30)])  # 使用近期平均价格
+        daily_holding_cost = inventory_level * holding_cost_per_unit_per_day * avg_price
+        daily_stockout_cost = stockout * stockout_cost_per_unit * avg_price
+
+        total_holding_cost += daily_holding_cost
+        total_stockout_cost += daily_stockout_cost
+
+        # 检查是否需要下单
+        if inventory_level + in_transit <= reorder_point and in_transit == 0:
+            # 下单（这里简化：订购量设为提前期平均需求的2倍）
+            order_qty = np.mean(daily_demand[max(0, day - 30):min(days, day + 1)]) * LEAD_TIME * 2
+            in_transit = order_qty
+            arrival_day = day + LEAD_TIME
+            total_ordering_cost += 10  # 假设每次订货成本10元
+
+    total_cost = total_holding_cost + total_stockout_cost + total_ordering_cost
+    avg_daily_cost = total_cost / days
+
+    # 计算实际服务水平
+    total_demand = np.sum(daily_demand)
+    fulfilled_demand = total_demand - np.sum([max(0, d - inv) for d, inv in
+                                              zip(daily_demand, [reorder_point * 2] * days)])  # 简化计算
+    actual_service_level = fulfilled_demand / total_demand if total_demand > 0 else 0
+
+    return {
+        'store_id': store_id,
+        'item_id': item_id,
+        'reorder_point': reorder_point,
+        'total_cost': total_cost,
+        'avg_daily_cost': avg_daily_cost,
+        'holding_cost': total_holding_cost,
+        'stockout_cost': total_stockout_cost,
+        'ordering_cost': total_ordering_cost,
+        'actual_service_level': actual_service_level,
+        'simulation_days': days
+    }
+
+
+# 为每个单品和每个再订货点进行成本模拟
+cost_simulation_results = []
+
+for idx, row in item_demand_stats.iterrows():
+    store_id = row['store_id']
+    item_id = row['item_id']
+    mu = row['mu']
+
+    # 计算该单品的成本参数
+    # 获取该单品的平均售价
+    item_sales = data_long[
+        (data_long['store_id'] == store_id) &
+        (data_long['item_id'] == item_id)
+        ]
+    avg_price = item_sales['sell_price'].mean() if len(item_sales) > 0 else 1.0
+
+    # 计算单位持有成本（每天）
+    holding_cost_per_unit_per_day = (BASE_HOLDING_COST_RATE / 365)
+
+    # 计算单位缺货成本（假设缺货损失是毛利的3倍）
+    # 假设毛利率为30%
+    gross_margin = 0.3
+    stockout_cost_per_unit = avg_price * gross_margin * BASE_STOCKOUT_COST_MULTIPLIER
+
+    print(f"\n分析 {store_id} - {item_id}:")
+    print(f"  平均售价: ${avg_price:.2f}")
+    print(f"  日持有成本率: {holding_cost_per_unit_per_day * 100:.4f}%")
+    print(f"  单位缺货成本: ${stockout_cost_per_unit:.2f}")
+
+    # 测试一系列可能的再订货点（从低到高）
+    test_reorder_points = []
+
+    # 从较低的值开始（μ * L 的50%）
+    base_rop = mu * LEAD_TIME
+    test_reorder_points.extend([
+        base_rop * 0.5,
+        base_rop * 0.75,
+        base_rop,
+        base_rop * 1.25,
+        base_rop * 1.5,
+        base_rop * 2.0,
+        base_rop * 3.0
+    ])
+
+    # 添加从库存策略计算出的特定ROP
+    item_policies = inventory_policies[
+        (inventory_policies['store_id'] == store_id) &
+        (inventory_policies['item_id'] == item_id)
+        ]
+
+    for _, policy in item_policies.iterrows():
+        if policy['reorder_point'] not in test_reorder_points:
+            test_reorder_points.append(policy['reorder_point'])
+
+    # 去重并排序
+    test_reorder_points = sorted(set(test_reorder_points))
+
+    # 为每个再订货点进行模拟
+    for rop in test_reorder_points:
+        result = simulate_inventory_costs(
+            store_id, item_id, rop, data_long,
+            holding_cost_per_unit_per_day, stockout_cost_per_unit
+        )
+
+        if result:
+            result['mu'] = mu
+            result['sigma'] = row['sigma']
+            cost_simulation_results.append(result)
+
+    print(f"  测试了 {len(test_reorder_points)} 个不同的再订货点")
+
+# 创建成本模拟结果DataFrame
+cost_simulation_df = pd.DataFrame(cost_simulation_results)
+
+# 保存成本模拟结果
+cost_file = r'D:\供应链\cost_simulation_results.csv'
+cost_simulation_df.to_csv(cost_file, index=False, encoding='utf-8-sig')
+print(f"\n成本模拟结果已保存至: {cost_file}")
+```
+### 管理建议
+管理建议的生成是完成整个分析“决策闭环”的关键一步。此步骤的目标并非简单罗列数据结果，而是将所有先前的诊断发现——从宏观的网络特征到单品的脉冲式需求模式，再到不同策略下的成本模拟——进行综合研判，最终转化为清晰、具体、可立即执行的业务指令。我们基于成本权衡分析找到的理论最优点，结合单品实际的高波动性（CV>0.77）与事件驱动特性，为每个商品-门店组合推荐一个特定的再订货点（ROP）与安全库存量。这份建议的核心在于“差异化”：它不仅明确了“订多少”（具体数值），更通过阐释其对应的服务水平与预期成本，说明了“为何如此订”（商业逻辑），从而为库存管理者提供了兼具数据支撑和业务洞察的决策依据，驱动供应链策略从分析报告真正落地到仓库货架。
+```python
+# ============================================================================
+# 步骤3：生成管理建议
+# ============================================================================
+print("\n" + "=" * 60)
+print("步骤3：生成管理建议")
+print("=" * 60)
+
+
+def generate_management_recommendations(cost_df, policies_df):
+    """基于成本分析和策略模拟生成管理建议"""
+
+    recommendations = []
+
+    # 获取所有唯一的单品
+    unique_items = cost_df[['store_id', 'item_id']].drop_duplicates()
+
+    for _, item in unique_items.iterrows():
+        store_id = item['store_id']
+        item_id = item['item_id']
+
+        # 获取该单品的成本数据
+        item_costs = cost_df[
+            (cost_df['store_id'] == store_id) &
+            (cost_df['item_id'] == item_id)
+            ]
+
+        if len(item_costs) == 0:
+            continue
+
+        # 找到总成本最低的再订货点
+        min_cost_row = item_costs.loc[item_costs['total_cost'].idxmin()]
+
+        # 获取该单品的策略数据
+        item_policies = policies_df[
+            (policies_df['store_id'] == store_id) &
+            (policies_df['item_id'] == item_id)
+            ]
+
+        # 找到最接近的预设服务水平
+        target_rop = min_cost_row['reorder_point']
+        closest_policy = item_policies.iloc[(item_policies['reorder_point'] - target_rop).abs().argsort()[:1]]
+
+        if len(closest_policy) > 0:
+            target_service_level = closest_policy.iloc[0]['service_level']
+            target_safety_stock = closest_policy.iloc[0]['safety_stock']
+        else:
+            target_service_level = 0.90
+            target_safety_stock = min_cost_row['mu'] * LEAD_TIME * 0.5
+
+        # 获取基本统计信息
+        stats_row = item_demand_stats[
+            (item_demand_stats['store_id'] == store_id) &
+            (item_demand_stats['item_id'] == item_id)
+            ].iloc[0]
+
+        # 生成建议
+        recommendation = {
+            'store_id': store_id,
+            'item_id': item_id,
+            'recommended_rop': round(min_cost_row['reorder_point'], 1),
+            'recommended_safety_stock': round(target_safety_stock, 1),
+            'target_service_level': target_service_level,
+            'expected_daily_cost': round(min_cost_row['avg_daily_cost'], 2),
+            'estimated_annual_cost': round(min_cost_row['avg_daily_cost'] * 365, 2),
+            'mu': round(stats_row['mu'], 2),
+            'sigma': round(stats_row['sigma'], 2),
+            'cv': round(stats_row['cv'], 3),
+            'rationale': f"该ROP在模拟中实现了{min_cost_row['actual_service_level']:.1%}的实际服务水平，"
+                         f"且总成本最低。考虑到该单品的高波动性(CV={stats_row['cv']:.3f})，"
+                         f"建议保持较高的安全库存以应对需求不确定性。"
+        }
+
+        recommendations.append(recommendation)
+
+    return pd.DataFrame(recommendations)
+
+
+# 生成管理建议
+management_recommendations = generate_management_recommendations(cost_simulation_df, inventory_policies)
+
+# 保存管理建议
+recommendations_file = r'D:\供应链\management_recommendations.csv'
+management_recommendations.to_csv(recommendations_file, index=False, encoding='utf-8-sig')
+print(f"管理建议已保存至: {recommendations_file}")
+
+# ============================================================================
+```
 
 
 
