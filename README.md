@@ -1087,6 +1087,11 @@ print(f"管理建议已保存至: {recommendations_file}")
 
 综上所述，本项研究的终极价值不仅在于产出针对具体商品（FOODS_3_090、FOODS_3_120）在具体门店（CA_1、CA_3）的、数据驱动的库存参数建议（如再订货点、安全库存及目标成本），更在于完整示范了一套可复用的数据分析方法论。它深刻阐明，在复杂多变的零售环境中，卓越的供应链管理绝非依赖直觉或单一公式，而必须建立在对多层次数据进行系统性解构与重构的基础之上——从宏观趋势中锁定战场，从网络结构中识别规则例外，最终在微观脉冲中寻得成本与服务的最优平衡。本次分析所形成的策略框架与决策流程，为将数据资产持续转化为竞争优势，奠定了坚实的基础。
 ## 5.可视化看板
+<img width="1169" height="649" alt="861d1ed5ba68563798dc650d698f4ae4" src="https://github.com/user-attachments/assets/24ab2000-379c-447d-85f7-0ef96d4cc523" />
+<img width="1167" height="658" alt="2cd9033c2a4efb69afca903673f62e42" src="https://github.com/user-attachments/assets/d3e82921-a1a9-4585-a9e1-be79e0f913a0" />
+<img width="1165" height="654" alt="513924fe2e8ce1d1dfcc675745b8c17c" src="https://github.com/user-attachments/assets/d04d4a64-281d-4052-bef0-ae2ca15be361" />
+
+
 
 
 
